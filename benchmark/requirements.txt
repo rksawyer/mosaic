@@ -8,3 +8,5 @@ tabulate
 
 # Development / testing
 pytest
+hadolint-bin
+shellcheck-py

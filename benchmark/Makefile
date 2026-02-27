@@ -65,17 +65,9 @@ test: ## Run all non-GPU tests
 .PHONY: lint
 lint: ## Run linters on Dockerfile and shell scripts
 	@echo "--- Dockerfile lint ---"
-	@if command -v hadolint > /dev/null 2>&1; then \
-		hadolint Dockerfile.trtllm --ignore DL3008 --ignore DL3013; \
-	else \
-		echo "hadolint not found, skipping Dockerfile lint"; \
-	fi
+	hadolint Dockerfile.trtllm --ignore DL3008 --ignore DL3013
 	@echo "--- Shell script lint ---"
-	@if command -v shellcheck > /dev/null 2>&1; then \
-		shellcheck sweep.sh; \
-	else \
-		echo "shellcheck not found, skipping shell lint"; \
-	fi
+	shellcheck sweep.sh
 
 # ---------- Clean ----------
 

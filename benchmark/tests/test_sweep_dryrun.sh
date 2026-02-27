@@ -9,12 +9,16 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 SWEEP="${SCRIPT_DIR}/sweep.sh"
+export PYTHON="${PYTHON:-${SCRIPT_DIR}/.venv/bin/python}"
 PASS=0
 FAIL=0
 
-assert_contains() {
-    local label="$1" output="$2" pattern="$3"
-    if echo "${output}" | grep -q "${pattern}"; then
+TMPOUT=$(mktemp)
+trap 'rm -f "${TMPOUT}"' EXIT
+
+assert_file_contains() {
+    local label="$1" file="$2" pattern="$3"
+    if grep -q "${pattern}" "${file}"; then
         echo "  PASS: ${label}"
         PASS=$((PASS + 1))
     else
@@ -23,9 +27,9 @@ assert_contains() {
     fi
 }
 
-assert_not_empty() {
-    local label="$1" output="$2"
-    if [[ -n "${output}" ]]; then
+assert_file_not_empty() {
+    local label="$1" file="$2"
+    if [[ -s "${file}" ]]; then
         echo "  PASS: ${label}"
         PASS=$((PASS + 1))
     else
@@ -47,40 +51,35 @@ fi
 
 # ── Test: dry-run full sweep ─────────────────────────────────────────────────
 
-echo "=== Test: --dry-run (full sweep) ==="
-output=$("${SWEEP}" --dry-run --results-dir /tmp/sweep-test 2>&1)
-assert_not_empty "produces output" "${output}"
-assert_contains "mentions trtllm-serve" "${output}" "trtllm-serve"
-assert_contains "mentions benchmark_serving" "${output}" "benchmark_serving"
-assert_contains "mentions generate_config" "${output}" "generate_config"
+echo "=== Test: --dry-run --single (content checks) ==="
+"${SWEEP}" --dry-run --single --tp 8 --ep 2 --conc 16 --isl 1024 --osl 1024 \
+    --results-dir /tmp/sweep-test > "${TMPOUT}" 2>&1
+assert_file_not_empty "produces output" "${TMPOUT}"
+assert_file_contains "mentions trtllm-serve" "${TMPOUT}" "trtllm-serve"
+assert_file_contains "mentions benchmark_serving" "${TMPOUT}" "benchmark_serving"
+assert_file_contains "mentions generate_config" "${TMPOUT}" "generate_config"
+assert_file_contains "single point TP=8" "${TMPOUT}" "TP=8"
+assert_file_contains "single point EP=2" "${TMPOUT}" "EP=2"
+assert_file_contains "single point CONC=16" "${TMPOUT}" "CONC=16"
 
 # ── Test: dry-run tp mode ────────────────────────────────────────────────────
 
 echo "=== Test: --dry-run --mode tp ==="
-output=$("${SWEEP}" --dry-run --mode tp --results-dir /tmp/sweep-test 2>&1)
-assert_not_empty "produces output" "${output}"
-assert_contains "references tp config" "${output}" "tp"
+"${SWEEP}" --dry-run --mode tp --results-dir /tmp/sweep-test > "${TMPOUT}" 2>&1
+assert_file_not_empty "produces output" "${TMPOUT}"
+assert_file_contains "tp mode references TP=" "${TMPOUT}" "TP="
 
 # ── Test: dry-run ep mode ────────────────────────────────────────────────────
 
 echo "=== Test: --dry-run --mode ep ==="
-output=$("${SWEEP}" --dry-run --mode ep --results-dir /tmp/sweep-test 2>&1)
-assert_not_empty "produces output" "${output}"
+"${SWEEP}" --dry-run --mode ep --results-dir /tmp/sweep-test > "${TMPOUT}" 2>&1
+assert_file_not_empty "produces output" "${TMPOUT}"
 
 # ── Test: dry-run hybrid mode ────────────────────────────────────────────────
 
 echo "=== Test: --dry-run --mode hybrid ==="
-output=$("${SWEEP}" --dry-run --mode hybrid --results-dir /tmp/sweep-test 2>&1)
-assert_not_empty "produces output" "${output}"
-
-# ── Test: dry-run single mode ────────────────────────────────────────────────
-
-echo "=== Test: --dry-run --single ==="
-output=$("${SWEEP}" --dry-run --single --tp 8 --ep 2 --conc 16 --isl 1024 --osl 1024 --results-dir /tmp/sweep-test 2>&1)
-assert_not_empty "produces output" "${output}"
-assert_contains "single point TP=8" "${output}" "TP=8"
-assert_contains "single point EP=2" "${output}" "EP=2"
-assert_contains "single point CONC=16" "${output}" "CONC=16"
+"${SWEEP}" --dry-run --mode hybrid --results-dir /tmp/sweep-test > "${TMPOUT}" 2>&1
+assert_file_not_empty "produces output" "${TMPOUT}"
 
 # ── Test: --single without required args fails ──────────────────────────────
 

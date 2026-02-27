@@ -42,10 +42,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # --- Build OpenTelemetry C++ SDK ---
 WORKDIR /tmp
 RUN git clone --branch ${OTEL_CPP_VERSION} --depth 1 \
-      https://github.com/open-telemetry/opentelemetry-cpp.git && \
-    cd opentelemetry-cpp && \
-    mkdir build && cd build && \
-    cmake \
+      https://github.com/open-telemetry/opentelemetry-cpp.git
+WORKDIR /tmp/opentelemetry-cpp/build
+RUN cmake \
       -DCMAKE_INSTALL_PREFIX=/tmp/opentelemetry-build \
       -DCMAKE_POSITION_INDEPENDENT_CODE=ON \
       -DBUILD_SHARED_LIBS=ON \
@@ -56,21 +55,22 @@ RUN git clone --branch ${OTEL_CPP_VERSION} --depth 1 \
       -DWITH_PROMETHEUS=ON \
       -DWITH_BENCHMARK=OFF \
       .. && \
-    cmake --build . --parallel $(nproc) && \
+    cmake --build . --parallel "$(nproc)" && \
     cmake --install .
 
 # --- Build NCCL (for profiler headers) ---
-RUN git clone --branch v${NCCL_TAG} --depth 1 https://github.com/NVIDIA/nccl.git && \
-    cd nccl && \
-    make -j"$(nproc)" src.build NVCC_GENCODE+=-Wno-deprecated-gpu-targets
+WORKDIR /tmp
+RUN git clone --branch v${NCCL_TAG} --depth 1 https://github.com/NVIDIA/nccl.git
+WORKDIR /tmp/nccl
+RUN make -j"$(nproc)" src.build NVCC_GENCODE+=-Wno-deprecated-gpu-targets
 
 # --- Build Mosaic NCCL Profiler OTEL Plugin ---
 ENV NCCL_PATH=/tmp/nccl
 ENV OTEL_PATH=/tmp/opentelemetry-build
 
 COPY profiler/ /tmp/nccl-profiler-otel-plugin/
-RUN cd /tmp/nccl-profiler-otel-plugin && \
-    /bin/bash -lc 'make clean && make TRACE=1 NCCL_PATH=/tmp/nccl'
+WORKDIR /tmp/nccl-profiler-otel-plugin
+RUN /bin/bash -lc 'make clean && make TRACE=1 NCCL_PATH=/tmp/nccl'
 
 # =============================================================================
 # Stage 2: Runner — TensorRT-LLM release + profiler + InferenceX + scripts
