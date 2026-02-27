@@ -22,7 +22,7 @@ IMAGE="${IMAGE:-mosaic/trtllm-bench:latest}"
 MODEL="${MODEL:-openai/gpt-oss-120b}"
 RESULTS_DIR="${RESULTS_DIR:-./results}"
 OTEL_ENDPOINT="${OTEL_ENDPOINT:-http://host.docker.internal:4318}"
-HF_CACHE="${HF_CACHE:-${HOME}/.cache/huggingface}"
+HF_HOME="${HF_HOME:-${HOME}/.cache/huggingface}"
 SERVER_PORT=8000
 HEALTH_TIMEOUT=600          # seconds to wait for trtllm-serve readiness
 HEALTH_INTERVAL=5           # seconds between health checks
@@ -198,7 +198,8 @@ run_benchmark() {
         --gpus all \
         --network host \
         --shm-size=16g \
-        -v "${HF_CACHE}:/root/.cache/huggingface" \
+        -v "${HF_HOME}:/root/.cache/huggingface" \
+        -e "HF_HOME=/root/.cache/huggingface" \
         -v "$(realpath "${config_file}"):/workspace/parallel_config.yaml:ro" \
         -v "$(realpath "${RESULTS_DIR}"):/results" \
         -e "NCCL_PROFILER_OTEL_TELEMETRY_ENDPOINT=${OTEL_ENDPOINT}" \
