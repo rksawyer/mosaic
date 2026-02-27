@@ -3,4 +3,10 @@
 
 .DS_Store
 .venv/
+__pycache__/
+*.pyc
+.pytest_cache/
 docs/site/**/*
+
+# Benchmark artifacts
+benchmark/results/
