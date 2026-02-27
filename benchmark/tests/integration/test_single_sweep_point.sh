@@ -46,6 +46,7 @@ echo ""
 
 # --- Run a single sweep point (TP=8, EP=1, smallest config) ---
 echo "--- Running sweep --single ---"
+NUM_REQUESTS="${NUM_REQUESTS:-200}" \
 "${SCRIPT_DIR}/sweep.sh" \
     --single \
     --tp 8 --ep 1 --conc 4 --isl 1024 --osl 1024 \
@@ -70,9 +71,10 @@ check "result JSON is valid" \
     "${PYTHON}" -c "
 import json, sys
 data = json.load(open('${RESULTS_DIR}/tp8-4-1024x1024.json'))
-assert 'metadata' in data, 'missing metadata'
-assert 'results' in data, 'missing results'
-print('Result JSON structure OK')
+assert 'request_throughput' in data, 'missing request_throughput'
+assert 'output_throughput' in data, 'missing output_throughput'
+assert data['completed'] > 0, 'no completed requests'
+print(f'Result JSON OK: {data[\"completed\"]} completed, {data[\"output_throughput\"]:.1f} tok/s')
 "
 
 # --- Run summarize_results.py ---

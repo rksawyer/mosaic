@@ -26,10 +26,10 @@ DEFAULT_STEP = "15s"
 
 # Prometheus queries for NCCL metrics (from Research.md Section 6.2 / 6.3)
 METRIC_QUERIES = {
-    "collective_bytes_per_sec": 'sum(rate(nccl_profiler_collective_bytes[1m]))',
-    "collective_time_p99_us": 'histogram_quantile(0.99, sum(rate(nccl_profiler_collective_time_bucket[1m])) by (le))',
-    "p2p_bytes_per_sec": 'sum(rate(nccl_profiler_p2p_bytes[1m]))',
-    "rank_rate_avg_mbps": 'avg(rate(nccl_profiler_rank_rate_sum[1m]) / rate(nccl_profiler_rank_rate_count[1m]))',
+    "collective_bytes_per_sec": 'sum(rate(nccl_profiler_collective_bytes_total[1m]))',
+    "collective_time_p99_us": 'histogram_quantile(0.99, sum(rate(nccl_profiler_collective_time_microseconds_bucket[1m])) by (le))',
+    "rank_bytes_per_sec": 'sum(rate(nccl_profiler_rank_bytes_total[1m]))',
+    "rank_rate_avg_mbps": 'avg(rate(nccl_profiler_rank_rate_MB_per_second_sum[1m]) / rate(nccl_profiler_rank_rate_MB_per_second_count[1m]))',
 }
 
 
@@ -195,7 +195,7 @@ DISPLAY_COLUMNS = [
     ("duration_s", "Dur(s)"),
     ("collective_bytes_per_sec_avg", "Coll B/s avg"),
     ("collective_time_p99_us_avg", "Coll p99 µs"),
-    ("p2p_bytes_per_sec_avg", "P2P B/s avg"),
+    ("rank_bytes_per_sec_avg", "Rank B/s avg"),
     ("rank_rate_avg_mbps_avg", "Rank MB/s"),
 ]
 

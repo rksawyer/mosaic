@@ -4,8 +4,10 @@
 
 """Aggregate InferenceX JSON benchmark results into summary tables.
 
-Scans a results directory for *.json files, extracts throughput and latency
-metrics, and produces markdown or CSV output sorted by output throughput.
+Scans a results directory for *.json files (excluding *.meta.json), extracts
+throughput and latency metrics from InferenceX's flat output format, pulls
+parallelism metadata from the companion .meta.json files, and produces markdown
+or CSV output sorted by output throughput.
 """
 
 from __future__ import annotations
@@ -19,18 +21,34 @@ from pathlib import Path
 
 from tabulate import tabulate
 
-REQUIRED_METADATA_KEYS = {"tp", "ep", "concurrency", "input_seq_len", "output_seq_len"}
-REQUIRED_RESULT_KEYS = {"request_throughput", "output_throughput"}
-
 
 class ResultParseError(Exception):
     """Raised when a result JSON file is malformed or missing required fields."""
 
 
+REQUIRED_RESULT_KEYS = {"request_throughput", "output_throughput"}
+
+
+def _load_meta(result_path: Path) -> dict:
+    """Load the companion .meta.json for a result file, if it exists."""
+    meta_path = result_path.with_suffix("").with_suffix(".meta.json")
+    if not meta_path.exists():
+        return {}
+    try:
+        return json.loads(meta_path.read_text())
+    except (json.JSONDecodeError, OSError):
+        return {}
+
+
 def parse_result_file(path: str) -> dict:
     """Parse a single InferenceX result JSON file.
 
-    Returns a flat dict with metadata + result metrics suitable for tabulation.
+    InferenceX produces a flat JSON with keys like request_throughput,
+    output_throughput, median_ttft_ms, p99_ttft_ms, etc.  Parallelism
+    metadata (tp, ep, concurrency, isl, osl) comes from the companion
+    .meta.json written by sweep.sh.
+
+    Returns a flat dict suitable for tabulation.
     Raises ResultParseError on malformed input.
     """
     filepath = Path(path)
@@ -39,43 +57,34 @@ def parse_result_file(path: str) -> dict:
     except (json.JSONDecodeError, OSError) as e:
         raise ResultParseError(f"Cannot parse {filepath.name}: {e}") from e
 
-    metadata = data.get("metadata")
-    if metadata is None:
-        raise ResultParseError(f"{filepath.name}: missing 'metadata' key")
+    if not isinstance(data, dict):
+        raise ResultParseError(f"{filepath.name}: expected a JSON object")
 
-    results = data.get("results")
-    if results is None:
-        raise ResultParseError(f"{filepath.name}: missing 'results' key")
-
-    missing_meta = REQUIRED_METADATA_KEYS - set(metadata.keys())
-    if missing_meta:
+    missing = REQUIRED_RESULT_KEYS - set(data.keys())
+    if missing:
         raise ResultParseError(
-            f"{filepath.name}: missing metadata fields: {sorted(missing_meta)}"
+            f"{filepath.name}: missing required fields: {sorted(missing)}"
         )
 
-    missing_results = REQUIRED_RESULT_KEYS - set(results.keys())
-    if missing_results:
-        raise ResultParseError(
-            f"{filepath.name}: missing result fields: {sorted(missing_results)}"
-        )
+    meta = _load_meta(filepath)
 
     return {
         "file": filepath.name,
-        "model_id": metadata.get("model_id", ""),
-        "tp": metadata["tp"],
-        "ep": metadata["ep"],
-        "conc": metadata["concurrency"],
-        "isl": metadata["input_seq_len"],
-        "osl": metadata["output_seq_len"],
-        "request_throughput": results["request_throughput"],
-        "output_throughput": results["output_throughput"],
-        "total_token_throughput": results.get("total_token_throughput", 0.0),
-        "ttft_p50_ms": results.get("ttft_p50_ms", 0.0),
-        "ttft_p99_ms": results.get("ttft_p99_ms", 0.0),
-        "tpot_p50_ms": results.get("tpot_p50_ms", 0.0),
-        "tpot_p99_ms": results.get("tpot_p99_ms", 0.0),
-        "e2e_latency_p50_ms": results.get("e2e_latency_p50_ms", 0.0),
-        "e2e_latency_p99_ms": results.get("e2e_latency_p99_ms", 0.0),
+        "model_id": data.get("model_id", ""),
+        "tp": meta.get("tp", ""),
+        "ep": meta.get("ep", ""),
+        "conc": meta.get("conc", data.get("max_concurrency", "")),
+        "isl": meta.get("isl", ""),
+        "osl": meta.get("osl", ""),
+        "request_throughput": data["request_throughput"],
+        "output_throughput": data["output_throughput"],
+        "total_token_throughput": data.get("total_token_throughput", 0.0),
+        "ttft_p50_ms": data.get("median_ttft_ms", 0.0),
+        "ttft_p99_ms": data.get("p99_ttft_ms", 0.0),
+        "tpot_p50_ms": data.get("median_tpot_ms", 0.0),
+        "tpot_p99_ms": data.get("p99_tpot_ms", 0.0),
+        "e2e_latency_p50_ms": data.get("median_e2el_ms", 0.0),
+        "e2e_latency_p99_ms": data.get("p99_e2el_ms", 0.0),
     }
 
 
@@ -98,7 +107,6 @@ def summarize_directory(
         return [] if fmt == "rows" else ""
 
     json_files = sorted(dirpath.glob("*.json"))
-    # Exclude .meta.json files produced by sweep.sh
     json_files = [f for f in json_files if not f.name.endswith(".meta.json")]
 
     rows: list[dict] = []

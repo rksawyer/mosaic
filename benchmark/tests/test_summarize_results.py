@@ -3,6 +3,10 @@
 
 """Tests for summarize_results.py — JSON parsing, sorting, error handling,
 CSV/markdown output, and edge cases.
+
+InferenceX produces a flat JSON (no nested metadata/results), so test data
+mirrors that format.  Parallelism metadata comes from companion .meta.json
+files written by sweep.sh.
 """
 
 from __future__ import annotations
@@ -18,31 +22,55 @@ from summarize_results import (
 )
 
 SAMPLE_RESULT = {
-    "metadata": {
-        "model_id": "openai/gpt-oss-120b",
-        "tp": 8,
-        "ep": 2,
-        "concurrency": 16,
-        "input_seq_len": 1024,
-        "output_seq_len": 1024,
-    },
-    "results": {
-        "request_throughput": 12.5,
-        "output_throughput": 12800.0,
-        "total_token_throughput": 25600.0,
-        "ttft_p50_ms": 45.2,
-        "ttft_p99_ms": 120.3,
-        "tpot_p50_ms": 8.1,
-        "tpot_p99_ms": 15.6,
-        "e2e_latency_p50_ms": 8300.0,
-        "e2e_latency_p99_ms": 12400.0,
-    },
+    "date": "20260227-171400",
+    "backend": "openai",
+    "model_id": "openai/gpt-oss-120b",
+    "tokenizer_id": "openai/gpt-oss-120b",
+    "best_of": 1,
+    "num_prompts": 1000,
+    "request_rate": 4.0,
+    "burstiness": 1.0,
+    "max_concurrency": 4,
+    "duration": 806.41,
+    "completed": 1000,
+    "total_input_tokens": 1024000,
+    "total_output_tokens": 1024000,
+    "request_throughput": 1.24,
+    "output_throughput": 1269.83,
+    "total_token_throughput": 2539.65,
+    "mean_ttft_ms": 186.34,
+    "median_ttft_ms": 156.93,
+    "p99_ttft_ms": 1084.29,
+    "mean_tpot_ms": 2.97,
+    "median_tpot_ms": 2.97,
+    "p99_tpot_ms": 3.04,
+    "mean_itl_ms": 2.97,
+    "median_itl_ms": 2.91,
+    "p99_itl_ms": 4.00,
+}
+
+SAMPLE_META = {
+    "start_ts": 1772211324,
+    "end_ts": 1772212448,
+    "config_name": "tp8",
+    "tp": 8,
+    "ep": 1,
+    "moe_tp": 8,
+    "moe_ep": 1,
+    "dp_attention": False,
+    "isl": 1024,
+    "osl": 1024,
+    "conc": 4,
+    "model": "openai/gpt-oss-120b",
 }
 
 
-def _write_result(tmp_path, filename, data):
+def _write_result(tmp_path, filename, data, meta=None):
     f = tmp_path / filename
     f.write_text(json.dumps(data))
+    if meta is not None:
+        meta_name = filename.replace(".json", ".meta.json")
+        (tmp_path / meta_name).write_text(json.dumps(meta))
     return f
 
 
@@ -52,14 +80,24 @@ def _write_result(tmp_path, filename, data):
 
 
 class TestParseResultFile:
-    def test_valid_result(self, tmp_path):
-        f = _write_result(tmp_path, "tp8-ep2-16-1024x1024.json", SAMPLE_RESULT)
+    def test_valid_result_with_meta(self, tmp_path):
+        f = _write_result(tmp_path, "tp8-4-1024x1024.json", SAMPLE_RESULT, SAMPLE_META)
         result = parse_result_file(str(f))
         assert result["tp"] == 8
-        assert result["ep"] == 2
-        assert result["conc"] == 16
-        assert result["output_throughput"] == 12800.0
-        assert result["ttft_p50_ms"] == 45.2
+        assert result["ep"] == 1
+        assert result["conc"] == 4
+        assert result["isl"] == 1024
+        assert result["osl"] == 1024
+        assert result["output_throughput"] == 1269.83
+        assert result["ttft_p50_ms"] == 156.93
+        assert result["ttft_p99_ms"] == 1084.29
+
+    def test_valid_result_without_meta(self, tmp_path):
+        f = _write_result(tmp_path, "tp8-4-1024x1024.json", SAMPLE_RESULT)
+        result = parse_result_file(str(f))
+        assert result["tp"] == ""
+        assert result["conc"] == 4  # falls back to max_concurrency from result
+        assert result["output_throughput"] == 1269.83
 
     def test_malformed_json(self, tmp_path):
         f = tmp_path / "bad.json"
@@ -67,43 +105,16 @@ class TestParseResultFile:
         with pytest.raises(ResultParseError, match="Cannot parse"):
             parse_result_file(str(f))
 
-    def test_missing_metadata_key(self, tmp_path):
-        bad = {"results": SAMPLE_RESULT["results"]}
-        f = _write_result(tmp_path, "no_meta.json", bad)
-        with pytest.raises(ResultParseError, match="missing 'metadata'"):
-            parse_result_file(str(f))
-
-    def test_missing_results_key(self, tmp_path):
-        bad = {"metadata": SAMPLE_RESULT["metadata"]}
-        f = _write_result(tmp_path, "no_results.json", bad)
-        with pytest.raises(ResultParseError, match="missing 'results'"):
-            parse_result_file(str(f))
-
-    def test_missing_required_metadata_fields(self, tmp_path):
-        bad = {
-            "metadata": {"model_id": "x"},
-            "results": SAMPLE_RESULT["results"],
-        }
-        f = _write_result(tmp_path, "sparse_meta.json", bad)
-        with pytest.raises(ResultParseError, match="missing metadata fields"):
-            parse_result_file(str(f))
-
-    def test_missing_required_result_fields(self, tmp_path):
-        bad = {
-            "metadata": SAMPLE_RESULT["metadata"],
-            "results": {"some_other_metric": 42},
-        }
-        f = _write_result(tmp_path, "sparse_results.json", bad)
-        with pytest.raises(ResultParseError, match="missing result fields"):
+    def test_missing_required_fields(self, tmp_path):
+        bad = {"some_other_metric": 42}
+        f = _write_result(tmp_path, "sparse.json", bad)
+        with pytest.raises(ResultParseError, match="missing required fields"):
             parse_result_file(str(f))
 
     def test_optional_fields_default_to_zero(self, tmp_path):
         minimal = {
-            "metadata": SAMPLE_RESULT["metadata"],
-            "results": {
-                "request_throughput": 10.0,
-                "output_throughput": 5000.0,
-            },
+            "request_throughput": 10.0,
+            "output_throughput": 5000.0,
         }
         f = _write_result(tmp_path, "minimal.json", minimal)
         result = parse_result_file(str(f))
@@ -114,6 +125,12 @@ class TestParseResultFile:
     def test_nonexistent_file(self):
         with pytest.raises(ResultParseError, match="Cannot parse"):
             parse_result_file("/nonexistent/path/result.json")
+
+    def test_non_dict_json(self, tmp_path):
+        f = tmp_path / "array.json"
+        f.write_text("[1, 2, 3]")
+        with pytest.raises(ResultParseError, match="expected a JSON object"):
+            parse_result_file(str(f))
 
 
 # ---------------------------------------------------------------------------
@@ -132,13 +149,7 @@ class TestSummarizeDirectory:
 
     def test_sorts_by_throughput_descending(self, tmp_path):
         for i, throughput in enumerate([100, 300, 200]):
-            data = {
-                "metadata": SAMPLE_RESULT["metadata"],
-                "results": {
-                    **SAMPLE_RESULT["results"],
-                    "output_throughput": throughput,
-                },
-            }
+            data = {**SAMPLE_RESULT, "output_throughput": throughput}
             _write_result(tmp_path, f"result_{i}.json", data)
 
         rows = summarize_directory(str(tmp_path), fmt="rows")
@@ -146,9 +157,7 @@ class TestSummarizeDirectory:
         assert throughputs == [300, 200, 100]
 
     def test_skips_meta_json_files(self, tmp_path):
-        _write_result(tmp_path, "tp8-ep1-4-1024x1024.json", SAMPLE_RESULT)
-        meta = {"start_ts": 1000, "end_ts": 2000, "config_name": "tp8"}
-        _write_result(tmp_path, "tp8-ep1-4-1024x1024.meta.json", meta)
+        _write_result(tmp_path, "tp8-4-1024x1024.json", SAMPLE_RESULT, SAMPLE_META)
 
         rows = summarize_directory(str(tmp_path), fmt="rows")
         assert len(rows) == 1
@@ -157,13 +166,12 @@ class TestSummarizeDirectory:
     def test_multiple_results(self, tmp_path):
         for conc in [4, 8, 16]:
             data = {
-                "metadata": {**SAMPLE_RESULT["metadata"], "concurrency": conc},
-                "results": {
-                    **SAMPLE_RESULT["results"],
-                    "output_throughput": conc * 1000.0,
-                },
+                **SAMPLE_RESULT,
+                "max_concurrency": conc,
+                "output_throughput": conc * 1000.0,
             }
-            _write_result(tmp_path, f"tp8-ep2-{conc}-1024x1024.json", data)
+            meta = {**SAMPLE_META, "conc": conc}
+            _write_result(tmp_path, f"tp8-{conc}-1024x1024.json", data, meta)
 
         rows = summarize_directory(str(tmp_path), fmt="rows")
         assert len(rows) == 3
@@ -185,7 +193,7 @@ class TestOutputFormats:
         output = summarize_directory(str(tmp_path), fmt="markdown")
         assert isinstance(output, str)
         assert "Tok/s" in output
-        assert "12800" in output
+        assert "1269" in output
         assert "|" in output
 
     def test_markdown_empty(self, tmp_path):
@@ -197,9 +205,9 @@ class TestOutputFormats:
         output = summarize_directory(str(tmp_path), fmt="csv")
         assert isinstance(output, str)
         lines = output.strip().split("\n")
-        assert len(lines) == 2  # header + 1 data row
+        assert len(lines) == 2
         assert "output_throughput" in lines[0]
-        assert "12800" in lines[1]
+        assert "1269" in lines[1]
 
     def test_csv_empty(self, tmp_path):
         output = summarize_directory(str(tmp_path), fmt="csv")
@@ -208,14 +216,11 @@ class TestOutputFormats:
     def test_csv_multiple_rows(self, tmp_path):
         for i in range(5):
             data = {
-                "metadata": {**SAMPLE_RESULT["metadata"], "concurrency": i + 1},
-                "results": {
-                    **SAMPLE_RESULT["results"],
-                    "output_throughput": (i + 1) * 1000.0,
-                },
+                **SAMPLE_RESULT,
+                "output_throughput": (i + 1) * 1000.0,
             }
             _write_result(tmp_path, f"r{i}.json", data)
 
         output = summarize_directory(str(tmp_path), fmt="csv")
         lines = output.strip().split("\n")
-        assert len(lines) == 6  # header + 5 data rows
+        assert len(lines) == 6

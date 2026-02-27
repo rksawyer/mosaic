@@ -40,13 +40,13 @@ class TestBuildPromQuery:
         assert "nccl_profiler_collective_time" in q["query"]
         assert q["step"] == "5s"
 
-    def test_p2p_bytes(self):
-        q = build_prom_query("p2p_bytes_per_sec", start=0, end=100)
-        assert "nccl_profiler_p2p_bytes" in q["query"]
+    def test_rank_bytes(self):
+        q = build_prom_query("rank_bytes_per_sec", start=0, end=100)
+        assert "nccl_profiler_rank_bytes_total" in q["query"]
 
     def test_rank_rate(self):
         q = build_prom_query("rank_rate_avg_mbps", start=0, end=100)
-        assert "nccl_profiler_rank_rate" in q["query"]
+        assert "nccl_profiler_rank_rate_MB_per_second" in q["query"]
 
     def test_unknown_metric_raises(self):
         with pytest.raises(ValueError, match="Unknown metric"):

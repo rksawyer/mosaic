@@ -29,7 +29,7 @@ HEALTH_INTERVAL=5           # seconds between health checks
 CONTAINER_NAME="trtllm-bench-server"
 PYTHON="${PYTHON:-python3}"
 BENCHMARK_SCRIPT="/workspace/InferenceX/utils/bench_serving/benchmark_serving.py"
-NUM_REQUESTS=1000
+NUM_REQUESTS="${NUM_REQUESTS:-1000}"
 
 # ── Argument parsing ─────────────────────────────────────────────────────────
 
