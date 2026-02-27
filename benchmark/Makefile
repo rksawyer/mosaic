@@ -18,7 +18,7 @@ PYTHON        := $(VENV)/bin/python
 
 .PHONY: venv
 venv: ## Create/update the Python virtual environment
-	uv venv $(VENV)
+	uv venv $(VENV) --allow-existing
 	uv pip install -r requirements.txt --python $(PYTHON)
 
 # ---------- Build ----------
