@@ -1,0 +1,130 @@
+# SPDX-FileCopyrightText: 2025 Delos Data Inc
+# SPDX-License-Identifier: Apache-2.0
+
+# TensorRT-LLM + Mosaic NCCL Profiler + InferenceX benchmark image.
+#
+# Multi-stage build:
+#   Stage 1 (builder) — compile OpenTelemetry C++ SDK, NCCL, and profiler plugin
+#   Stage 2 (runner)  — production image with trtllm-serve, profiler, InferenceX
+#
+# To build (from repo root):
+#   docker build -t mosaic/trtllm-bench:latest -f benchmark/Dockerfile.trtllm .
+#
+# To build from benchmark/ directory:
+#   docker build -t mosaic/trtllm-bench:latest -f Dockerfile.trtllm ../
+
+ARG NCCL_TAG=2.29.2-1
+ARG OTEL_CPP_VERSION=v1.25.0
+ARG TRTLLM_DEVEL_IMAGE=nvcr.io/nvidia/tensorrt-llm:0.19.0-devel-cuda12.8
+ARG TRTLLM_RELEASE_IMAGE=nvcr.io/nvidia/tensorrt-llm:0.19.0-release-cuda12.8
+
+# =============================================================================
+# Stage 1: Builder — compile OTel SDK, NCCL, and profiler plugin
+# =============================================================================
+FROM ${TRTLLM_DEVEL_IMAGE} AS builder
+ARG NCCL_TAG
+ARG OTEL_CPP_VERSION
+
+ENV PYTHONUNBUFFERED=1
+ENV DEBIAN_FRONTEND=noninteractive
+
+# --- Build dependencies ---
+RUN apt-get update && apt-get install -y --no-install-recommends \
+      libssl-dev \
+      libgrpc++-dev \
+      protobuf-compiler-grpc \
+      cmake \
+      build-essential \
+      git \
+      python3 && \
+    rm -rf /var/lib/apt/lists/*
+
+# --- Build OpenTelemetry C++ SDK ---
+WORKDIR /tmp
+RUN git clone --branch ${OTEL_CPP_VERSION} --depth 1 \
+      https://github.com/open-telemetry/opentelemetry-cpp.git && \
+    cd opentelemetry-cpp && \
+    mkdir build && cd build && \
+    cmake \
+      -DCMAKE_INSTALL_PREFIX=/tmp/opentelemetry-build \
+      -DCMAKE_POSITION_INDEPENDENT_CODE=ON \
+      -DBUILD_SHARED_LIBS=ON \
+      -DWITH_OTLP_GRPC=ON \
+      -DWITH_OTLP_HTTP=ON \
+      -DBUILD_TESTING=OFF \
+      -DOPENTELEMETRY_INSTALL=ON \
+      -DWITH_PROMETHEUS=ON \
+      -DWITH_BENCHMARK=OFF \
+      .. && \
+    cmake --build . --parallel $(nproc) && \
+    cmake --install .
+
+# --- Build NCCL (for profiler headers) ---
+RUN git clone --branch v${NCCL_TAG} --depth 1 https://github.com/NVIDIA/nccl.git && \
+    cd nccl && \
+    make -j"$(nproc)" src.build NVCC_GENCODE+=-Wno-deprecated-gpu-targets
+
+# --- Build Mosaic NCCL Profiler OTEL Plugin ---
+ENV NCCL_PATH=/tmp/nccl
+ENV OTEL_PATH=/tmp/opentelemetry-build
+
+COPY profiler/ /tmp/nccl-profiler-otel-plugin/
+RUN cd /tmp/nccl-profiler-otel-plugin && \
+    /bin/bash -lc 'make clean && make TRACE=1 NCCL_PATH=/tmp/nccl'
+
+# =============================================================================
+# Stage 2: Runner — TensorRT-LLM release + profiler + InferenceX + scripts
+# =============================================================================
+FROM ${TRTLLM_RELEASE_IMAGE} AS runner
+ARG NCCL_TAG
+ARG OTEL_CPP_VERSION
+
+ENV DEBIAN_FRONTEND=noninteractive
+
+# --- System upgrades ---
+RUN apt-get update && apt-get upgrade -y && rm -rf /var/lib/apt/lists/*
+
+# --- Copy profiler plugin and dependencies ---
+RUN mkdir -p /usr/local/plugins/lib
+
+COPY --from=builder /tmp/opentelemetry-build/lib/* /usr/local/lib/
+COPY --from=builder /tmp/nccl/build/lib/* /usr/local/plugins/lib/
+COPY --from=builder /tmp/nccl-profiler-otel-plugin/build/libnccl-profiler-otel.so \
+     /usr/local/plugins/lib/
+
+RUN ( ldconfig || true )
+
+# --- Clone InferenceX benchmark suite ---
+RUN git clone --depth 1 https://github.com/SemiAnalysisAI/InferenceX.git \
+      /workspace/InferenceX && \
+    if [ -f /workspace/InferenceX/requirements.txt ]; then \
+      pip install --no-cache-dir -r /workspace/InferenceX/requirements.txt; \
+    fi
+
+# --- Install benchmark Python dependencies ---
+RUN pip install --no-cache-dir jinja2 pyyaml tabulate
+
+# --- Copy benchmark scripts ---
+COPY benchmark/generate_config.py /workspace/benchmark/generate_config.py
+COPY benchmark/parallel_config.yaml.j2 /workspace/benchmark/parallel_config.yaml.j2
+COPY benchmark/configs.py /workspace/benchmark/configs.py
+
+# --- Environment ---
+ENV NCCL_VERSION=${NCCL_TAG}
+ENV LD_LIBRARY_PATH=/usr/local/plugins/lib:/usr/lib/x86_64-linux-gnu/:$LD_LIBRARY_PATH
+ENV NCCL_PROFILER_PLUGIN=otel
+ENV NCCL_PROFILER_OTEL_TELEMETRY_ENDPOINT=http://host.docker.internal:4318
+
+WORKDIR /workspace
+ENTRYPOINT ["/bin/bash", "-c"]
+
+# --- Labels (ARG placed late to maximise layer caching) ---
+ARG GIT_HASH=unknown
+LABEL maintainer="Mosaic Project <mosaic@openmosaic.ai>"
+LABEL org.opencontainers.image.title="Mosaic TensorRT-LLM Benchmark"
+LABEL org.opencontainers.image.description="TensorRT-LLM with Mosaic NCCL Profiler and InferenceX"
+LABEL org.opencontainers.image.url="https://github.com/open-mosaic/mosaic"
+LABEL org.opencontainers.image.source="https://github.com/open-mosaic/mosaic"
+LABEL org.opencontainers.image.revision="${GIT_HASH}"
+LABEL ai.openmosaic.image.nccl.version="${NCCL_TAG}"
+LABEL ai.openmosaic.image.otel.version="${OTEL_CPP_VERSION}"
