@@ -59,7 +59,11 @@ sweep-hybrid: telemetry-up ## Sweep hybrid TP+EP configurations
 
 .PHONY: results
 results: ## Summarize sweep results
-	python3 summarize_results.py $(RESULTS_DIR)
+	$(PYTHON) summarize_results.py $(RESULTS_DIR)
+
+.PHONY: correlate
+correlate: ## Correlate results with NCCL telemetry from Prometheus
+	$(PYTHON) correlate_telemetry.py $(RESULTS_DIR)
 
 # ---------- Validation & Testing ----------
 
@@ -77,6 +81,16 @@ lint: ## Run linters on Dockerfile and shell scripts
 	$(VENV)/bin/hadolint Dockerfile.trtllm --ignore DL3008 --ignore DL3013
 	@echo "--- Shell script lint ---"
 	$(VENV)/bin/shellcheck sweep.sh
+
+# ---------- Integration Tests (GPU-required) ----------
+
+.PHONY: test-integration-smoke
+test-integration-smoke: ## Run container smoke tests (requires Docker + built image)
+	bash tests/integration/test_container_smoke.sh $(IMAGE_NAME):$(IMAGE_TAG)
+
+.PHONY: test-integration-sweep
+test-integration-sweep: ## Run single sweep point end-to-end (requires GPUs)
+	bash tests/integration/test_single_sweep_point.sh
 
 # ---------- Clean ----------
 
