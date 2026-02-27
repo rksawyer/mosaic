@@ -11,6 +11,15 @@ MODEL         := openai/gpt-oss-120b
 RESULTS_DIR   := ./results
 LGTM_COMPOSE  := ../deployments/docker-compose.yml
 BENCHMARK_DIR := $(dir $(abspath $(lastword $(MAKEFILE_LIST))))
+VENV          := .venv
+PYTHON        := $(VENV)/bin/python
+
+# ---------- Virtual Environment ----------
+
+.PHONY: venv
+venv: ## Create/update the Python virtual environment
+	uv venv $(VENV)
+	uv pip install -r requirements.txt --python $(PYTHON)
 
 # ---------- Build ----------
 
@@ -56,18 +65,18 @@ results: ## Summarize sweep results
 
 .PHONY: validate-configs
 validate-configs: ## Generate and validate all parallelism config YAML files
-	python3 -m pytest tests/test_generate_config.py tests/test_configs.py -v
+	$(PYTHON) -m pytest tests/test_generate_config.py tests/test_configs.py -v
 
 .PHONY: test
 test: ## Run all non-GPU tests
-	python3 -m pytest tests/ -v --ignore=tests/integration
+	$(PYTHON) -m pytest tests/ -v --ignore=tests/integration
 
 .PHONY: lint
 lint: ## Run linters on Dockerfile and shell scripts
 	@echo "--- Dockerfile lint ---"
-	hadolint Dockerfile.trtllm --ignore DL3008 --ignore DL3013
+	$(VENV)/bin/hadolint Dockerfile.trtllm --ignore DL3008 --ignore DL3013
 	@echo "--- Shell script lint ---"
-	shellcheck sweep.sh
+	$(VENV)/bin/shellcheck sweep.sh
 
 # ---------- Clean ----------
 
