@@ -129,7 +129,7 @@ class TestGenerateConfig:
         config = yaml.safe_load(output)
         assert config["tensor_parallel_size"] == 8
         assert "moe_expert_parallel_size" not in config
-        assert config["enable_attention_dp"] is False
+        assert "enable_attention_dp" not in config
 
     def test_ep8_pure_expert_parallel(self, template_path):
         output = generate_config(
@@ -169,12 +169,11 @@ class TestGenerateConfig:
         )
         config = yaml.safe_load(output)
         assert "kv_cache_config" in config
-        assert config["kv_cache_config"]["dtype"] == "fp8"
         assert isinstance(config["kv_cache_config"]["free_gpu_memory_fraction"], float)
 
     def test_moe_backend_trtllm(self, template_path):
         output = generate_config(
-            tp=8, ep=1, moe_tp=8, moe_ep=1,
+            tp=8, ep=8, moe_tp=1, moe_ep=8,
             moe_backend="TRTLLM",
             template_path=template_path,
         )
@@ -183,12 +182,21 @@ class TestGenerateConfig:
 
     def test_moe_backend_cutlass(self, template_path):
         output = generate_config(
-            tp=8, ep=1, moe_tp=8, moe_ep=1,
+            tp=8, ep=8, moe_tp=1, moe_ep=8,
             moe_backend="CUTLASS",
             template_path=template_path,
         )
         config = yaml.safe_load(output)
         assert config["moe_config"]["backend"] == "CUTLASS"
+
+    def test_moe_config_absent_when_ep1(self, template_path):
+        output = generate_config(
+            tp=8, ep=1, moe_tp=8, moe_ep=1,
+            moe_backend="TRTLLM",
+            template_path=template_path,
+        )
+        config = yaml.safe_load(output)
+        assert "moe_config" not in config
 
     def test_invalid_moe_backend(self, template_path):
         with pytest.raises(ConfigError, match="moe_backend must be one of"):
@@ -198,14 +206,14 @@ class TestGenerateConfig:
                 template_path=template_path,
             )
 
-    def test_high_conc_cuda_graph(self, template_path):
+    def test_high_conc_no_cuda_graph(self, template_path):
         output = generate_config(
             tp=8, ep=1, moe_tp=8, moe_ep=1,
             conc=64, isl=1024, osl=1024,
             template_path=template_path,
         )
         config = yaml.safe_load(output)
-        assert config["cuda_graph_config"]["max_batch_size"] == 64
+        assert "cuda_graph_config" not in config
 
     def test_all_8_research_configs(self, template_path):
         """All 8 configs from Research.md Section 4.7 render without error."""

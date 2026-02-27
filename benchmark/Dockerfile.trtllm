@@ -113,7 +113,7 @@ COPY benchmark/configs.py /workspace/benchmark/configs.py
 ENV NCCL_VERSION=${NCCL_TAG}
 ENV LD_LIBRARY_PATH=/usr/local/plugins/lib:/usr/lib/x86_64-linux-gnu/:$LD_LIBRARY_PATH
 ENV NCCL_PROFILER_PLUGIN=otel
-ENV NCCL_PROFILER_OTEL_TELEMETRY_ENDPOINT=http://host.docker.internal:4318
+ENV NCCL_PROFILER_OTEL_TELEMETRY_ENDPOINT=http://localhost:4318
 
 WORKDIR /workspace
 ENTRYPOINT ["/bin/bash", "-c"]

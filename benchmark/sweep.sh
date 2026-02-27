@@ -21,14 +21,14 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 IMAGE="${IMAGE:-mosaic/trtllm-bench:latest}"
 MODEL="${MODEL:-openai/gpt-oss-120b}"
 RESULTS_DIR="${RESULTS_DIR:-./results}"
-OTEL_ENDPOINT="${OTEL_ENDPOINT:-http://host.docker.internal:4318}"
+OTEL_ENDPOINT="${OTEL_ENDPOINT:-http://localhost:4318}"
 HF_HOME="${HF_HOME:-${HOME}/.cache/huggingface}"
 SERVER_PORT=8000
 HEALTH_TIMEOUT=600          # seconds to wait for trtllm-serve readiness
 HEALTH_INTERVAL=5           # seconds between health checks
 CONTAINER_NAME="trtllm-bench-server"
 PYTHON="${PYTHON:-python3}"
-BENCHMARK_SCRIPT="/workspace/InferenceX/benchmark_serving.py"
+BENCHMARK_SCRIPT="/workspace/InferenceX/utils/bench_serving/benchmark_serving.py"
 NUM_REQUESTS=1000
 
 # ── Argument parsing ─────────────────────────────────────────────────────────
@@ -177,8 +177,8 @@ run_benchmark() {
 
     if [[ "${DRY_RUN}" == true ]]; then
         log "[dry-run] generate_config: ${gen_cmd}"
-        log "[dry-run] trtllm-serve ${MODEL} --tp_size ${tp} --ep_size ${ep} --config ${config_file} --max_seq_len ${max_model_len} --port ${SERVER_PORT}"
-        log "[dry-run] benchmark_serving.py --host localhost --port ${SERVER_PORT} --model ${MODEL} --num-prompts ${NUM_REQUESTS} --request-rate ${conc} --input-len ${isl} --output-len ${osl}"
+        log "[dry-run] trtllm-serve ${MODEL} --extra_llm_api_options ${config_file} --max_seq_len ${max_model_len} --port ${SERVER_PORT}"
+        log "[dry-run] benchmark_serving.py --backend openai --host localhost --port ${SERVER_PORT} --model ${MODEL} --dataset-name random --random-input-len ${isl} --random-output-len ${osl} --num-prompts ${NUM_REQUESTS} --request-rate ${conc} --max-concurrency ${conc} --save-result --result-dir /results --result-filename ${result_filename}"
         log "[dry-run] result -> ${RESULTS_DIR}/${result_filename}"
         return 0
     fi
@@ -205,12 +205,9 @@ run_benchmark() {
         -e "NCCL_PROFILER_OTEL_TELEMETRY_ENDPOINT=${OTEL_ENDPOINT}" \
         "${IMAGE}" \
         "trtllm-serve ${MODEL} \
-            --tp_size ${tp} \
-            --ep_size ${ep} \
-            --config /workspace/parallel_config.yaml \
+            --extra_llm_api_options /workspace/parallel_config.yaml \
             --max_batch_size ${conc} \
             --max_seq_len ${max_model_len} \
-            --kv_cache_free_gpu_memory_fraction 0.95 \
             --port ${SERVER_PORT}"
 
     # Step 3: Wait for health
@@ -225,14 +222,19 @@ run_benchmark() {
     log "Running benchmark (CONC=${conc}, ISL=${isl}, OSL=${osl})..."
     docker exec "${CONTAINER_NAME}" \
         python3 "${BENCHMARK_SCRIPT}" \
+            --backend openai \
             --host localhost \
             --port "${SERVER_PORT}" \
             --model "${MODEL}" \
+            --dataset-name random \
+            --random-input-len "${isl}" \
+            --random-output-len "${osl}" \
             --num-prompts "${NUM_REQUESTS}" \
             --request-rate "${conc}" \
-            --input-len "${isl}" \
-            --output-len "${osl}" \
-            --output-file "/results/${result_filename}"
+            --max-concurrency "${conc}" \
+            --save-result \
+            --result-dir /results \
+            --result-filename "${result_filename}"
 
     local end_ts
     end_ts=$(date +%s)
