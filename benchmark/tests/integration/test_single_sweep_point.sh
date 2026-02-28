@@ -46,7 +46,6 @@ echo ""
 
 # --- Run a single sweep point (TP=8, EP=1, smallest config) ---
 echo "--- Running sweep --single ---"
-NUM_REQUESTS="${NUM_REQUESTS:-200}" \
 "${SCRIPT_DIR}/sweep.sh" \
     --single \
     --tp 8 --ep 1 --conc 4 --isl 1024 --osl 1024 \

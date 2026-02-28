@@ -29,7 +29,7 @@ HEALTH_INTERVAL=5           # seconds between health checks
 CONTAINER_NAME="trtllm-bench-server"
 PYTHON="${PYTHON:-python3}"
 BENCHMARK_SCRIPT="/workspace/InferenceX/utils/bench_serving/benchmark_serving.py"
-NUM_REQUESTS="${NUM_REQUESTS:-1000}"
+NUM_REQUESTS="${NUM_REQUESTS:-10}"       # prompts = NUM_REQUESTS * concurrency
 
 # ── Argument parsing ─────────────────────────────────────────────────────────
 
@@ -178,7 +178,7 @@ run_benchmark() {
     if [[ "${DRY_RUN}" == true ]]; then
         log "[dry-run] generate_config: ${gen_cmd}"
         log "[dry-run] trtllm-serve ${MODEL} --extra_llm_api_options ${config_file} --max_seq_len ${max_model_len} --port ${SERVER_PORT}"
-        log "[dry-run] benchmark_serving.py --backend openai --host localhost --port ${SERVER_PORT} --model ${MODEL} --dataset-name random --random-input-len ${isl} --random-output-len ${osl} --num-prompts ${NUM_REQUESTS} --request-rate ${conc} --max-concurrency ${conc} --save-result --result-dir /results --result-filename ${result_filename}"
+        log "[dry-run] benchmark_serving.py --backend openai --host localhost --port ${SERVER_PORT} --model ${MODEL} --dataset-name random --random-input-len ${isl} --random-output-len ${osl} --num-prompts $((NUM_REQUESTS * conc)) --request-rate ${conc} --max-concurrency ${conc} --save-result --result-dir /results --result-filename ${result_filename}"
         log "[dry-run] result -> ${RESULTS_DIR}/${result_filename}"
         return 0
     fi
@@ -219,7 +219,8 @@ run_benchmark() {
     fi
 
     # Step 4: Run benchmark_serving.py
-    log "Running benchmark (CONC=${conc}, ISL=${isl}, OSL=${osl})..."
+    local num_prompts=$(( NUM_REQUESTS * conc ))
+    log "Running benchmark (CONC=${conc}, ISL=${isl}, OSL=${osl}, NUM_PROMPTS=${num_prompts})..."
     docker exec "${CONTAINER_NAME}" \
         python3 "${BENCHMARK_SCRIPT}" \
             --backend openai \
@@ -229,7 +230,7 @@ run_benchmark() {
             --dataset-name random \
             --random-input-len "${isl}" \
             --random-output-len "${osl}" \
-            --num-prompts "${NUM_REQUESTS}" \
+            --num-prompts "${num_prompts}" \
             --request-rate "${conc}" \
             --max-concurrency "${conc}" \
             --save-result \
