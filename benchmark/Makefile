@@ -40,19 +40,19 @@ telemetry-down: ## Stop the LGTM observability stack
 # ---------- Sweep ----------
 
 .PHONY: sweep
-sweep: telemetry-up ## Run full parameter sweep
+sweep:  ## Run full parameter sweep
 	./sweep.sh --model $(MODEL) --results-dir $(RESULTS_DIR)
 
 .PHONY: sweep-tp
-sweep-tp: telemetry-up ## Sweep TP-only configurations
+sweep-tp: ## Sweep TP-only configurations
 	./sweep.sh --model $(MODEL) --results-dir $(RESULTS_DIR) --mode tp
 
 .PHONY: sweep-ep
-sweep-ep: telemetry-up ## Sweep EP-only configurations
+sweep-ep: ## Sweep EP-only configurations
 	./sweep.sh --model $(MODEL) --results-dir $(RESULTS_DIR) --mode ep
 
 .PHONY: sweep-hybrid
-sweep-hybrid: telemetry-up ## Sweep hybrid TP+EP configurations
+sweep-hybrid: ## Sweep hybrid TP+EP configurations
 	./sweep.sh --model $(MODEL) --results-dir $(RESULTS_DIR) --mode hybrid
 
 # ---------- Results ----------
