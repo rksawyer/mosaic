@@ -4,8 +4,10 @@
 
 # Parameterised benchmark sweep over TP/EP/CONC/ISL/OSL configurations.
 # Reads the sweep matrix from configs.py (JSON lines), generates a
-# parallel_config.yaml for each point, launches trtllm-serve inside a
-# Docker container, runs InferenceX benchmark_serving.py, and collects results.
+# parallel_config.yaml per group (restart only when it would change), launches
+# trtllm-serve inside a Docker container, runs InferenceX benchmark_serving.py,
+# and collects results. Groups by (tp, ep, kv_cache_fraction) so we do not
+# restart when only conc or (isl, osl) within the same kv band changes.
 #
 # Usage:
 #   ./sweep.sh --model openai/gpt-oss-120b --results-dir ./results
@@ -104,6 +106,49 @@ wait_for_health() {
     done
     log "ERROR: Server failed to become healthy within ${HEALTH_TIMEOUT}s"
     return 1
+}
+
+# Group key: (tp, ep, moe_tp, moe_ep, dp_attention, kv_cache_fraction).
+# parallel_config.yaml only changes when these change (conc does not affect it).
+# kv_cache_fraction is derived from isl+osl (same logic as generate_config.py).
+get_group_key() {
+    local cfg="$1"
+    "${PYTHON}" -c "
+import sys, json
+d = json.load(sys.stdin)
+t = d['isl'] + d['osl']
+kv = 0.95 if t <= 2200 else (0.85 if t <= 5000 else 0.70)
+k = (d['tp'], d['ep'], d['moe_tp'], d['moe_ep'], str(d['dp_attention']).lower(), kv)
+print(','.join(map(str, k)))
+" <<< "${cfg}"
+}
+
+# From a newline-separated list of config JSON lines, output one JSON object with
+# tp, ep, moe_tp, moe_ep, dp_attention, name, max_model_len, max_conc, server_isl, server_osl.
+compute_group_spec() {
+    local configs="$1"
+    "${PYTHON}" -c "
+import sys, json
+lines = sys.stdin.read().strip().split('\n')
+if not lines:
+    sys.exit(1)
+configs = [json.loads(l) for l in lines]
+tp = configs[0]['tp']
+ep = configs[0]['ep']
+moe_tp = configs[0]['moe_tp']
+moe_ep = configs[0]['moe_ep']
+dp_attention = configs[0]['dp_attention']
+name = configs[0]['name']
+max_model_len = max(c['isl'] + c['osl'] + 200 for c in configs)
+max_conc = max(c['conc'] for c in configs)
+best = max(configs, key=lambda c: c['isl'] + c['osl'])
+server_isl, server_osl = best['isl'], best['osl']
+out = {'tp': tp, 'ep': ep, 'moe_tp': moe_tp, 'moe_ep': moe_ep,
+       'dp_attention': dp_attention, 'name': name,
+       'max_model_len': max_model_len, 'max_conc': max_conc,
+       'server_isl': server_isl, 'server_osl': server_osl}
+print(json.dumps(out))
+" <<< "${configs}"
 }
 
 # ── Generate sweep matrix ───────────────────────────────────────────────────
@@ -268,6 +313,140 @@ META
     cleanup_container
 }
 
+# Start the TensorRT container once for a group. Group spec JSON must have
+# tp, ep, moe_tp, moe_ep, dp_attention, name, max_model_len, max_conc, server_isl, server_osl.
+start_server_for_group() {
+    local spec="$1"
+    local name tp ep moe_tp moe_ep dp_attention max_model_len max_conc server_isl server_osl
+    name=$(echo "${spec}" | "${PYTHON}" -c "import sys,json; d=json.load(sys.stdin); print(d['name'])")
+    tp=$(echo "${spec}" | "${PYTHON}" -c "import sys,json; d=json.load(sys.stdin); print(d['tp'])")
+    ep=$(echo "${spec}" | "${PYTHON}" -c "import sys,json; d=json.load(sys.stdin); print(d['ep'])")
+    moe_tp=$(echo "${spec}" | "${PYTHON}" -c "import sys,json; d=json.load(sys.stdin); print(d['moe_tp'])")
+    moe_ep=$(echo "${spec}" | "${PYTHON}" -c "import sys,json; d=json.load(sys.stdin); print(d['moe_ep'])")
+    dp_attention=$(echo "${spec}" | "${PYTHON}" -c "import sys,json; d=json.load(sys.stdin); print(str(d['dp_attention']).lower())")
+    max_model_len=$(echo "${spec}" | "${PYTHON}" -c "import sys,json; d=json.load(sys.stdin); print(d['max_model_len'])")
+    max_conc=$(echo "${spec}" | "${PYTHON}" -c "import sys,json; d=json.load(sys.stdin); print(d['max_conc'])")
+    server_isl=$(echo "${spec}" | "${PYTHON}" -c "import sys,json; d=json.load(sys.stdin); print(d['server_isl'])")
+    server_osl=$(echo "${spec}" | "${PYTHON}" -c "import sys,json; d=json.load(sys.stdin); print(d['server_osl'])")
+
+    local config_dir="${RESULTS_DIR}/configs"
+    mkdir -p "${config_dir}"
+    local config_file="${config_dir}/${name}-group-max_conc${max_conc}-${server_isl}x${server_osl}.yaml"
+
+    local dp_flag=""
+    if [[ "${dp_attention}" == "true" ]]; then
+        dp_flag="--dp-attention"
+    fi
+
+    if [[ "${DRY_RUN}" == true ]]; then
+        log "[dry-run] start_server_for_group: ${name} max_model_len=${max_model_len} max_conc=${max_conc}"
+        return 0
+    fi
+
+    log "Generating group server config: ${config_file}"
+    # shellcheck disable=SC2086
+    "${PYTHON}" "${SCRIPT_DIR}/generate_config.py" \
+        --tp "${tp}" --ep "${ep}" --moe-tp "${moe_tp}" --moe-ep "${moe_ep}" \
+        ${dp_flag} --conc "${max_conc}" --isl "${server_isl}" --osl "${server_osl}" \
+        -o "${config_file}"
+
+    cleanup_container
+
+    log "Starting trtllm-serve (TP=${tp}, EP=${ep}) for group..."
+    docker run -d \
+        --name "${CONTAINER_NAME}" \
+        --gpus all \
+        --network host \
+        --shm-size=16g \
+        -v "${HF_HOME}:/root/.cache/huggingface" \
+        -e "HF_HOME=/root/.cache/huggingface" \
+        -v "$(realpath "${config_file}"):/workspace/parallel_config.yaml:ro" \
+        -v "$(realpath "${RESULTS_DIR}"):/results" \
+        -e "NCCL_PROFILER_OTEL_TELEMETRY_ENDPOINT=${OTEL_ENDPOINT}" \
+        "${IMAGE}" \
+        "trtllm-serve ${MODEL} \
+            --extra_llm_api_options /workspace/parallel_config.yaml \
+            --max_batch_size ${max_conc} \
+            --max_seq_len ${max_model_len} \
+            --port ${SERVER_PORT}"
+
+    if ! wait_for_health; then
+        log "Server failed to start. Dumping logs:"
+        docker logs "${CONTAINER_NAME}" 2>&1 | tail -50
+        cleanup_container
+        return 1
+    fi
+}
+
+# Run one benchmark point against the already-running container. No container start/stop.
+run_benchmark_point() {
+    local cfg="$1"
+    local start_ts="${2:-$(date +%s)}"
+
+    local name tp ep moe_tp moe_ep dp_attention isl osl conc result_filename
+    name=$(echo "${cfg}"     | "${PYTHON}" -c "import sys,json; print(json.load(sys.stdin)['name'])")
+    tp=$(echo "${cfg}"       | "${PYTHON}" -c "import sys,json; print(json.load(sys.stdin)['tp'])")
+    ep=$(echo "${cfg}"       | "${PYTHON}" -c "import sys,json; print(json.load(sys.stdin)['ep'])")
+    moe_tp=$(echo "${cfg}"   | "${PYTHON}" -c "import sys,json; print(json.load(sys.stdin)['moe_tp'])")
+    moe_ep=$(echo "${cfg}"   | "${PYTHON}" -c "import sys,json; print(json.load(sys.stdin)['moe_ep'])")
+    dp_attention=$(echo "${cfg}" | "${PYTHON}" -c "import sys,json; d=json.load(sys.stdin)['dp_attention']; print(str(d).lower())")
+    isl=$(echo "${cfg}"      | "${PYTHON}" -c "import sys,json; print(json.load(sys.stdin)['isl'])")
+    osl=$(echo "${cfg}"     | "${PYTHON}" -c "import sys,json; print(json.load(sys.stdin)['osl'])")
+    conc=$(echo "${cfg}"     | "${PYTHON}" -c "import sys,json; print(json.load(sys.stdin)['conc'])")
+    result_filename=$(echo "${cfg}" | "${PYTHON}" -c "import sys,json; print(json.load(sys.stdin)['result_filename'])")
+
+    log "Point: ${result_filename} (CONC=${conc}, ISL=${isl}, OSL=${osl})"
+
+    if [[ "${DRY_RUN}" == true ]]; then
+        log "[dry-run] benchmark_serving.py ... --result-filename ${result_filename}"
+        return 0
+    fi
+
+    local num_prompts=$(( NUM_REQUESTS * conc ))
+    if ! docker exec "${CONTAINER_NAME}" \
+        python3 "${BENCHMARK_SCRIPT}" \
+            --backend openai \
+            --host localhost \
+            --port "${SERVER_PORT}" \
+            --model "${MODEL}" \
+            --dataset-name random \
+            --random-input-len "${isl}" \
+            --random-output-len "${osl}" \
+            --num-prompts "${num_prompts}" \
+            --request-rate "${conc}" \
+            --max-concurrency "${conc}" \
+            --save-result \
+            --result-dir /results \
+            --result-filename "${result_filename}"; then
+        log "WARNING: Benchmark failed for ${result_filename}"
+        return 1
+    fi
+
+    local end_ts
+    end_ts=$(date +%s)
+    local meta_file="${RESULTS_DIR}/${result_filename%.json}.meta.json"
+    cat > "${meta_file}" <<META
+{
+  "start_ts": ${start_ts},
+  "end_ts": ${end_ts},
+  "config_name": "${name}",
+  "tp": ${tp},
+  "ep": ${ep},
+  "moe_tp": ${moe_tp},
+  "moe_ep": ${moe_ep},
+  "dp_attention": ${dp_attention},
+  "isl": ${isl},
+  "osl": ${osl},
+  "conc": ${conc},
+  "model": "${MODEL}",
+  "image": "${IMAGE}",
+  "otel_endpoint": "${OTEL_ENDPOINT}"
+}
+META
+    log "Result saved: ${RESULTS_DIR}/${result_filename}"
+    return 0
+}
+
 # ── Main ─────────────────────────────────────────────────────────────────────
 
 main() {
@@ -287,16 +466,73 @@ main() {
         matrix=$(generate_matrix)
         local total
         total=$(echo "${matrix}" | wc -l)
-        log "Sweep matrix: ${total} configuration(s)"
+        log "Sweep matrix: ${total} configuration(s) (restart only when parallel_config.yaml would change)"
 
-        while IFS= read -r cfg; do
-            count=$((count + 1))
-            log "──── Point ${count}/${total} ────"
-            if ! run_benchmark "${cfg}"; then
-                log "WARNING: Benchmark failed for config: ${cfg}"
-                failed=$((failed + 1))
+        local matrix_lines
+        readarray -t matrix_lines <<< "${matrix}"
+        local current_key=""
+        local group_buffer=()
+        local i
+        for i in "${!matrix_lines[@]}"; do
+            local cfg="${matrix_lines[$i]}"
+            [[ -n "${cfg}" ]] || continue
+            local key
+            key=$(get_group_key "${cfg}")
+            if [[ "${key}" != "${current_key}" ]]; then
+                # Process previous group if any
+                if [[ ${#group_buffer[@]} -gt 0 ]]; then
+                    local group_configs
+                    group_configs=$(printf '%s\n' "${group_buffer[@]}")
+                    local spec
+                    spec=$(compute_group_spec "${group_configs}")
+                    log "──── Group ${current_key} (${#group_buffer[@]} points) ────"
+                    if ! start_server_for_group "${spec}"; then
+                        log "WARNING: Server failed for group; marking ${#group_buffer[@]} points as failed"
+                        failed=$((failed + ${#group_buffer[@]}))
+                    else
+                        local group_start_ts
+                        group_start_ts=$(date +%s)
+                        local c
+                        for c in "${group_buffer[@]}"; do
+                            count=$((count + 1))
+                            log "──── Point ${count}/${total} ────"
+                            if ! run_benchmark_point "${c}" "${group_start_ts}"; then
+                                failed=$((failed + 1))
+                            fi
+                        done
+                    fi
+                    cleanup_container
+                fi
+                group_buffer=("${cfg}")
+                current_key="${key}"
+            else
+                group_buffer+=("${cfg}")
             fi
-        done <<< "${matrix}"
+        done
+        # Process last group
+        if [[ ${#group_buffer[@]} -gt 0 ]]; then
+            local group_configs
+            group_configs=$(printf '%s\n' "${group_buffer[@]}")
+            local spec
+            spec=$(compute_group_spec "${group_configs}")
+            log "──── Group ${current_key} (${#group_buffer[@]} points) ────"
+            if ! start_server_for_group "${spec}"; then
+                log "WARNING: Server failed for group; marking ${#group_buffer[@]} points as failed"
+                failed=$((failed + ${#group_buffer[@]}))
+            else
+                local group_start_ts
+                group_start_ts=$(date +%s)
+                local c
+                for c in "${group_buffer[@]}"; do
+                    count=$((count + 1))
+                    log "──── Point ${count}/${total} ────"
+                    if ! run_benchmark_point "${c}" "${group_start_ts}"; then
+                        failed=$((failed + 1))
+                    fi
+                done
+            fi
+            cleanup_container
+        fi
     fi
 
     log "════════════════════════════════════════════════════════════"
